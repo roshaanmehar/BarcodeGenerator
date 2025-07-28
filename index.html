@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic CSV to Barcode Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <!-- JsBarcode is no longer used for generation but kept for potential future use -->
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #4f46e5;
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div class="container mx-auto p-4 sm:p-6 md:p-8 max-w-5xl">
+        <!-- Header Section -->
+        <header class="bg-white rounded-xl shadow-md p-6 mb-8">
+            <h1 class="text-3xl font-bold text-gray-900">Dynamic CSV to EAN-13 Barcode Generator</h1>
+            <p class="mt-2 text-gray-600">Upload any CSV, select the column containing barcodes, and the tool will generate a ZIP file of all barcodes using an external API.</p>
+        </header>
+
+        <!-- Main Application Section -->
+        <main class="bg-white rounded-xl shadow-md p-6">
+            <!-- Step 1: File Upload -->
+            <div id="fileUploadStep">
+                <div class="flex flex-col md:flex-row md:items-center md:space-x-6">
+                    <div class="flex-grow">
+                        <label for="csvFile" class="block text-sm font-medium text-gray-700 mb-2">Select CSV File:</label>
+                        <input type="file" id="csvFile" accept=".csv" class="block w-full text-sm text-gray-500
+                            file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold
+                            file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition-colors duration-200 cursor-pointer"/>
+                    </div>
+                    <div class="mt-4 md:mt-0 md:self-end">
+                         <a href="#" id="downloadSample" class="inline-block px-4 py-2 bg-gray-600 text-white font-semibold rounded-lg shadow-sm hover:bg-gray-700 transition-colors duration-200">Download Sample CSV</a>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Step 2: Column Selection -->
+            <div id="columnSelectStep" class="hidden">
+                 <p class="mb-2 text-sm font-medium text-gray-700">File selected: <span id="fileName" class="font-bold"></span></p>
+                 <label for="columnSelect" class="block text-sm font-medium text-gray-700 mb-2">Which column contains the barcodes?</label>
+                 <div class="flex flex-col sm:flex-row sm:space-x-4">
+                    <select id="columnSelect" class="block w-full sm:w-1/2 mt-1 rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50"></select>
+                    <button id="generateBtn" class="mt-4 sm:mt-0 px-6 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-sm hover:bg-indigo-700">Generate Barcodes</button>
+                    <button id="startOverBtn" class="mt-2 sm:mt-0 px-6 py-2 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300">Start Over</button>
+                 </div>
+            </div>
+            
+            <!-- Status/Log Area -->
+            <div id="statusContainer" class="mt-6 hidden">
+                <div class="flex items-center space-x-3 bg-gray-50 p-4 rounded-lg">
+                    <div id="spinner" class="spinner"></div>
+                    <div id="statusText" class="text-gray-700 font-medium"></div>
+                </div>
+            </div>
+            <div id="logContainer" class="mt-4 hidden">
+                 <h3 class="text-lg font-semibold border-b pb-2 mb-2">Processing Log</h3>
+                <pre id="log" class="bg-gray-50 p-4 rounded-lg text-sm whitespace-pre-wrap max-h-40 overflow-y-auto"></pre>
+            </div>
+            
+            <!-- Barcode Preview Area -->
+            <div id="barcodeContainer" class="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- Generated barcodes will be previewed here -->
+            </div>
+        </main>
+
+        <footer class="text-center mt-8 text-sm text-gray-500">
+            <p>Runs entirely in your browser. No data is uploaded.</p>
+        </footer>
+    </div>
+
+    <script>
+        // UI Elements
+        const csvFileInput = document.getElementById('csvFile');
+        const fileUploadStep = document.getElementById('fileUploadStep');
+        const columnSelectStep = document.getElementById('columnSelectStep');
+        const fileNameEl = document.getElementById('fileName');
+        const columnSelect = document.getElementById('columnSelect');
+        const generateBtn = document.getElementById('generateBtn');
+        const startOverBtn = document.getElementById('startOverBtn');
+        const barcodeContainer = document.getElementById('barcodeContainer');
+        const statusContainer = document.getElementById('statusContainer');
+        const statusText = document.getElementById('statusText');
+        const spinner = document.getElementById('spinner');
+        const logContainer = document.getElementById('logContainer');
+        const logElement = document.getElementById('log');
+        const downloadSampleLink = document.getElementById('downloadSample');
+
+        // State
+        let parsedCsvData = null;
+
+        // --- Event Listeners ---
+        csvFileInput.addEventListener('change', handleFileSelect, false);
+        generateBtn.addEventListener('click', handleBarcodeGeneration, false);
+        startOverBtn.addEventListener('click', resetUI, false);
+
+        function resetUI() {
+            fileUploadStep.classList.remove('hidden');
+            columnSelectStep.classList.add('hidden');
+            statusContainer.classList.add('hidden');
+            logContainer.classList.add('hidden');
+            barcodeContainer.innerHTML = '';
+            logElement.textContent = '';
+            csvFileInput.value = '';
+            parsedCsvData = null;
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            statusContainer.classList.remove('hidden');
+            spinner.classList.remove('hidden');
+            statusText.textContent = 'Parsing CSV headers...';
+
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    parsedCsvData = results;
+                    
+                    if (!results.meta.fields || results.meta.fields.length === 0) {
+                        statusText.textContent = 'Error: Could not read columns from CSV.';
+                        spinner.classList.add('hidden');
+                        return;
+                    }
+
+                    columnSelect.innerHTML = '';
+                    results.meta.fields.forEach(field => {
+                        const option = document.createElement('option');
+                        option.value = field;
+                        option.textContent = field;
+                        columnSelect.appendChild(option);
+                    });
+
+                    fileNameEl.textContent = file.name;
+                    fileUploadStep.classList.add('hidden');
+                    columnSelectStep.classList.remove('hidden');
+                    statusContainer.classList.add('hidden');
+                }
+            });
+        }
+        
+        async function handleBarcodeGeneration() {
+            const selectedColumn = columnSelect.value;
+            if (!selectedColumn || !parsedCsvData) {
+                alert('An error occurred. Please start over.');
+                return;
+            }
+
+            barcodeContainer.innerHTML = '';
+            logElement.textContent = '';
+            logContainer.classList.add('hidden');
+            
+            statusContainer.classList.remove('hidden');
+            spinner.classList.remove('hidden');
+            statusText.textContent = 'Processing rows...';
+
+            let logMessages = [];
+            const validBarcodes = [];
+
+            parsedCsvData.data.forEach((row, index) => {
+                const barcodeValue = row[selectedColumn];
+                if (!barcodeValue) {
+                    logMessages.push(`[Skipped] Row ${index + 2}: Selected column '${selectedColumn}' is empty.`);
+                    return;
+                }
+                
+                const trimmedBarcode = String(barcodeValue).trim();
+                if (!/^\d{13}$/.test(trimmedBarcode)) {
+                   logMessages.push(`[Skipped] Value '${trimmedBarcode}' in row ${index + 2} is not a valid 13-digit barcode.`);
+                   return;
+                }
+                
+                validBarcodes.push(trimmedBarcode);
+                createBarcodeCard(trimmedBarcode, index);
+            });
+
+            updateLog(logMessages);
+
+            if(validBarcodes.length > 0) {
+                statusText.textContent = `Found ${validBarcodes.length} valid barcodes. Fetching images and generating ZIP...`;
+                await downloadAllAsZip(validBarcodes);
+                statusText.textContent = `Done! Your 'barcodes.zip' file has been downloaded.`;
+            } else {
+                statusText.textContent = 'No valid 13-digit barcodes found in the selected column.';
+            }
+            spinner.classList.add('hidden');
+        }
+
+        function updateLog(messages) {
+             if (messages.length > 0) {
+                logElement.textContent = messages.join('\n');
+                logContainer.classList.remove('hidden');
+            }
+        }
+
+        function createBarcodeCard(barcodeValue, id) {
+            const card = document.createElement('div');
+            card.className = "bg-gray-50 border rounded-lg p-4 flex flex-col items-center justify-center shadow-sm min-h-[140px]";
+            
+            const img = document.createElement('img');
+            img.src = `https://barcodeapi.org/api/ean13/${barcodeValue}`;
+            img.alt = `Barcode for ${barcodeValue}`;
+            img.onerror = () => {
+                img.outerHTML = `<div class="text-red-500 text-center text-sm">Error loading barcode for ${barcodeValue}. Check if it's a valid EAN-13.</div>`;
+            };
+            
+            card.appendChild(img);
+            barcodeContainer.appendChild(card);
+        }
+        
+        async function downloadAllAsZip(barcodes) {
+            const zip = new JSZip();
+            let successCount = 0;
+            let errorCount = 0;
+            
+            const promises = barcodes.map(barcodeValue => {
+                const url = `https://barcodeapi.org/api/ean13/${barcodeValue}`;
+                const filename = `${barcodeValue}.png`;
+
+                return fetch(url)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`Server returned status ${response.status}`);
+                        }
+                        return response.blob();
+                    })
+                    .then(blob => {
+                        zip.file(filename, blob);
+                        successCount++;
+                    })
+                    .catch(error => {
+                        console.error(`Failed to fetch barcode for ${barcodeValue}:`, error);
+                        errorCount++;
+                    });
+            });
+
+            await Promise.all(promises);
+            
+            if (errorCount > 0) {
+                updateLog([`Could not download ${errorCount} barcodes. See console for details.`]);
+            }
+            statusText.textContent = `Creating ZIP file with ${successCount} barcodes...`;
+
+            if (successCount === 0) {
+                 statusText.textContent = 'No barcodes could be downloaded.';
+                 return;
+            }
+
+            const content = await zip.generateAsync({ type: "blob" });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(content);
+            link.download = "barcodes.zip";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        downloadSampleLink.addEventListener('click', function(event) {
+            event.preventDefault();
+            const csvContent = "ProductID,ProductName,Barcode,Price\n101,Laptop Pro,5901234123457,999.99\n102,Wireless Mouse,9780201379624,49.99\n103,Keyboard,1234567890128,75.50\n";
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            link.setAttribute("href", url);
+            link.setAttribute("download", "products_sample.csv");
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+
+    </script>
+</body>
+</html>
